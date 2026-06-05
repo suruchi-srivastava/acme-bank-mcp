@@ -8,6 +8,20 @@ from datetime import datetime, timedelta
 
 random.seed(42)  # Fixed seed — keeps demo data consistent across restarts
 
+# ── Demo Login Credentials ────────────────────────────────────────────────────
+# username (or last 4 of account number) + PIN → user_id
+
+DEMO_CREDENTIALS = {
+    # By username
+    "sarah.johnson": {"pin": "1234", "user_id": "user_001"},
+    "m.chen":        {"pin": "5678", "user_id": "user_002"},
+    "emily.r":       {"pin": "9012", "user_id": "user_003"},
+    # By last 4 digits of primary checking account
+    "4521":          {"pin": "1234", "user_id": "user_001"},
+    "3301":          {"pin": "5678", "user_id": "user_002"},
+    "2201":          {"pin": "9012", "user_id": "user_003"},
+}
+
 # ── Users ────────────────────────────────────────────────────────────────────
 
 DEMO_USERS = {

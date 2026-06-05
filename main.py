@@ -29,6 +29,7 @@ from demo_data import (
     DEMO_FRAUD_ALERTS,
     DEMO_LOCATIONS,
     DEMO_FX_RATES,
+    DEMO_CREDENTIALS,
     get_user_transactions,
 )
 
@@ -58,7 +59,10 @@ def _h() -> dict:
     return _req_headers.get({})
 
 
-def _user_id() -> str:
+def _user_id(user_token: str = None) -> str:
+    # Priority: explicit token from tool call > x-user-id header > demo default
+    if user_token and user_token in DEMO_USERS:
+        return user_token
     return _h().get("x-user-id", "user_001")
 
 
@@ -98,19 +102,79 @@ mcp = FastMCP(
     ),
 )
 
-# ── 1. Customer Profile ───────────────────────────────────────────────────────
+# ── 0. Login ─────────────────────────────────────────────────────────────────
 
 
 @mcp.tool()
-async def get_customer_profile() -> dict:
+async def login(username: str, pin: str) -> dict:
     """
-    Get the current customer's profile: name, contact details, membership tier,
-    credit score, relationship manager, and account preferences.
+    Authenticate a customer with their username (or last 4 digits of account number)
+    and 4-digit PIN. Returns a user_token that must be passed to every subsequent
+    tool call in this conversation.
+
+    Demo credentials:
+      sarah.johnson / 1234  (or account last-4: 4521)
+      m.chen        / 5678  (or account last-4: 3301)
+      emily.r       / 9012  (or account last-4: 2201)
+
+    Args:
+        username: Username or last 4 digits of primary checking account.
+        pin: 4-digit PIN.
     """
     if not _authorized():
         return _unauth()
 
-    user = DEMO_USERS.get(_user_id(), DEMO_USERS["user_001"])
+    cred = DEMO_CREDENTIALS.get(username.strip().lower())
+    if not cred or cred["pin"] != pin.strip():
+        return {
+            "status": "error",
+            "message": "Invalid username or PIN. Please try again.",
+            "data": {"authenticated": False},
+        }
+
+    user = DEMO_USERS[cred["user_id"]]
+    accounts = DEMO_ACCOUNTS.get(cred["user_id"], [])
+    total_assets = sum(
+        a["balance"] for a in accounts
+        if a["type"] in ("checking", "savings", "investment") and a["balance"] > 0
+    )
+
+    return {
+        "status": "success",
+        "message": (
+            f"Welcome back, {user['name']}! "
+            f"You're logged in as a {user['tier']} member. "
+            f"Use the user_token from this response in all subsequent tool calls."
+        ),
+        "data": {
+            "authenticated": True,
+            "user_token": cred["user_id"],   # pass this to every tool
+            "name": user["name"],
+            "tier": user["tier"],
+            "member_since": user["member_since"],
+            "total_assets": round(total_assets, 2),
+            "account_count": len(accounts),
+            "last_login": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        },
+    }
+
+
+# ── 1. Customer Profile ───────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def get_customer_profile(user_token: str = None) -> dict:
+    """
+    Get the current customer's profile: name, contact details, membership tier,
+    credit score, relationship manager, and account preferences.
+
+    Args:
+        user_token: Token returned by the login tool. Required to identify the customer.
+    """
+    if not _authorized():
+        return _unauth()
+
+    user = DEMO_USERS.get(_user_id(user_token), DEMO_USERS["user_001"])
     return {
         "status": "success",
         "message": f"Profile loaded for {user['name']} — {user['tier']} member since {user['member_since']}.",
@@ -124,16 +188,19 @@ async def get_customer_profile() -> dict:
 
 
 @mcp.tool()
-async def get_account_summary() -> dict:
+async def get_account_summary(user_token: str = None) -> dict:
     """
     Get all bank accounts (checking, savings, credit card, investment) with
     current balances, available credit, APY, and account details.
     Returns structured data for an interactive balance dashboard widget.
+
+    Args:
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()
 
-    uid = _user_id()
+    uid = _user_id(user_token)
     user = DEMO_USERS.get(uid, DEMO_USERS["user_001"])
     accounts = DEMO_ACCOUNTS.get(uid, DEMO_ACCOUNTS["user_001"])
 
@@ -168,18 +235,19 @@ async def get_account_summary() -> dict:
 
 
 @mcp.tool()
-async def get_spending_analytics(period: str = "30d") -> dict:
+async def get_spending_analytics(period: str = "30d", user_token: str = None) -> dict:
     """
     Get spending breakdown by category and monthly trend.
     Returns structured data for a donut chart and bar chart widget.
 
     Args:
         period: Time window — "7d", "30d", "90d", or "ytd". Default: "30d".
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()
 
-    uid = _user_id()
+    uid = _user_id(user_token)
     txns = get_user_transactions(uid)
 
     now = datetime.now()
@@ -251,6 +319,7 @@ async def get_transactions(
     category: str = None,
     limit: int = 25,
     offset: int = 0,
+    user_token: str = None,
 ) -> dict:
     """
     Get transaction history with optional filters.
@@ -261,11 +330,12 @@ async def get_transactions(
         category: Filter by category (e.g. "Dining"). None = all categories.
         limit: Number of results (max 50). Default: 25.
         offset: Pagination offset. Default: 0.
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()
 
-    uid = _user_id()
+    uid = _user_id(user_token)
     all_txns = get_user_transactions(uid)
 
     filtered = all_txns
@@ -305,16 +375,19 @@ async def get_transactions(
 
 
 @mcp.tool()
-async def get_loan_details() -> dict:
+async def get_loan_details(user_token: str = None) -> dict:
     """
     Get all active loans with repayment progress, next payment dates,
     interest rates, and amortization info.
     Returns structured data for a repayment progress widget.
+
+    Args:
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()
 
-    uid = _user_id()
+    uid = _user_id(user_token)
     loans = DEMO_LOANS.get(uid, [])
 
     if not loans:
@@ -364,16 +437,19 @@ async def get_loan_details() -> dict:
 
 
 @mcp.tool()
-async def get_investment_portfolio() -> dict:
+async def get_investment_portfolio(user_token: str = None) -> dict:
     """
     Get the investment portfolio: holdings, asset allocation breakdown,
     gain/loss per position, and overall performance metrics.
     Returns structured data for a pie chart and holdings table widget.
+
+    Args:
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()
 
-    uid = _user_id()
+    uid = _user_id(user_token)
     portfolio = DEMO_INVESTMENTS.get(uid)
 
     if not portfolio:
@@ -427,16 +503,19 @@ async def get_investment_portfolio() -> dict:
 
 
 @mcp.tool()
-async def get_credit_score() -> dict:
+async def get_credit_score(user_token: str = None) -> dict:
     """
     Get the current credit score with score band, key factors (payment history,
     utilization, etc.), and a 6-month score trend.
     Returns structured data for a gauge and trend chart widget.
+
+    Args:
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()
 
-    uid = _user_id()
+    uid = _user_id(user_token)
     user = DEMO_USERS.get(uid, DEMO_USERS["user_001"])
     score = user["credit_score"]
     credit_data = user.get("credit_data", {})
@@ -481,6 +560,7 @@ async def transfer_funds(
     to_account_id: str,
     amount: float,
     memo: str = "",
+    user_token: str = None,
 ) -> dict:
     """
     Transfer funds between two of the customer's accounts.
@@ -491,11 +571,12 @@ async def transfer_funds(
         to_account_id: Destination account ID (e.g. "SAV-001-8834").
         amount: Transfer amount in USD (must be > 0).
         memo: Optional note for the transfer.
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()
 
-    uid = _user_id()
+    uid = _user_id(user_token)
     accounts = DEMO_ACCOUNTS.get(uid, DEMO_ACCOUNTS["user_001"])
 
     from_acc = next((a for a in accounts if a["account_id"] == from_account_id), None)
@@ -540,6 +621,7 @@ async def pay_bill(
     amount: float,
     from_account_id: str,
     scheduled_date: str = None,
+    user_token: str = None,
 ) -> dict:
     """
     Pay a bill or schedule a future payment.
@@ -550,11 +632,12 @@ async def pay_bill(
         amount: Payment amount in USD.
         from_account_id: Account to pay from (e.g. "CHK-001-4521").
         scheduled_date: Optional future date "YYYY-MM-DD". Defaults to today.
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()
 
-    uid = _user_id()
+    uid = _user_id(user_token)
     accounts = DEMO_ACCOUNTS.get(uid, DEMO_ACCOUNTS["user_001"])
     acc = next((a for a in accounts if a["account_id"] == from_account_id), None)
 
@@ -591,15 +674,18 @@ async def pay_bill(
 
 
 @mcp.tool()
-async def get_fraud_alerts() -> dict:
+async def get_fraud_alerts(user_token: str = None) -> dict:
     """
     Get recent security alerts, suspicious transaction flags, and account events.
     Unresolved alerts require customer action.
+
+    Args:
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()
 
-    uid = _user_id()
+    uid = _user_id(user_token)
     alerts = DEMO_FRAUD_ALERTS.get(uid, [])
     unresolved = [a for a in alerts if not a["resolved"]]
     resolved = [a for a in alerts if a["resolved"]]
@@ -626,13 +712,14 @@ async def get_fraud_alerts() -> dict:
 
 
 @mcp.tool()
-async def find_atm_branch(zip_code: str = "78701", radius_miles: int = 5) -> dict:
+async def find_atm_branch(zip_code: str = "78701", radius_miles: int = 5, user_token: str = None) -> dict:
     """
     Find nearby ACME Bank ATMs and branch locations.
 
     Args:
         zip_code: ZIP code to search near. Default: "78701" (Austin, TX).
         radius_miles: Search radius in miles (1–25). Default: 5.
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()
@@ -660,13 +747,14 @@ async def find_atm_branch(zip_code: str = "78701", radius_miles: int = 5) -> dic
 
 
 @mcp.tool()
-async def get_exchange_rates(base_currency: str = "USD") -> dict:
+async def get_exchange_rates(base_currency: str = "USD", user_token: str = None) -> dict:
     """
     Get current foreign exchange rates for major currencies.
     Useful for international transfers and travel planning.
 
     Args:
         base_currency: Base currency code. Options: "USD", "EUR", "GBP". Default: "USD".
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()
@@ -701,6 +789,7 @@ async def apply_for_loan(
     requested_amount: float,
     term_months: int,
     purpose: str = "",
+    user_token: str = None,
 ) -> dict:
     """
     Submit a loan application and receive an instant pre-approval decision
@@ -711,6 +800,7 @@ async def apply_for_loan(
         requested_amount: Loan amount in USD.
         term_months: Loan term in months (e.g. 36, 60, 120, 360).
         purpose: Optional description of loan purpose.
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()
@@ -723,7 +813,7 @@ async def apply_for_loan(
             "data": {},
         }
 
-    uid = _user_id()
+    uid = _user_id(user_token)
     user = DEMO_USERS.get(uid, DEMO_USERS["user_001"])
     score = user["credit_score"]
 
@@ -780,7 +870,7 @@ async def apply_for_loan(
 
 
 @mcp.tool()
-async def set_spending_alert(category: str, monthly_limit: float) -> dict:
+async def set_spending_alert(category: str, monthly_limit: float, user_token: str = None) -> dict:
     """
     Set a monthly spending alert for a category. Notifications fire at 80% and 100%.
 
@@ -789,6 +879,7 @@ async def set_spending_alert(category: str, monthly_limit: float) -> dict:
                   "Entertainment", "Shopping", "Healthcare", "Utilities",
                   "Travel", or "Education".
         monthly_limit: Monthly spending cap in USD.
+        user_token: Token returned by the login tool. Required to identify the customer.
     """
     if not _authorized():
         return _unauth()

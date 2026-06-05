@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: acme-bank-mcp
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /sse
+    envVars:
+      - key: ACME_API_KEY
+        generateValue: true   # Render auto-generates a secure random value
+      - key: PORT
+        value: "10000"        # Render free tier uses port 10000

@@ -37,6 +37,9 @@ from demo_data import (
 API_KEY = os.environ.get("ACME_API_KEY", "acme-demo-key-change-me")
 PORT = int(os.environ.get("PORT", 8000))
 
+# Required for Mindset validation — allows requests without mcp-session-id
+os.environ.setdefault("FASTMCP_STATELESS_HTTP", "true")
+
 # ── Header capture (ContextVar — async-safe) ──────────────────────────────────
 
 _req_headers: ContextVar[dict] = ContextVar("_req_headers", default={})

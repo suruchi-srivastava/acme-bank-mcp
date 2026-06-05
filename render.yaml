@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: python main.py   # reads PORT from env var automatically
     healthCheckPath: /sse
     envVars:
       - key: ACME_API_KEY

@@ -817,23 +817,39 @@ async def set_spending_alert(category: str, monthly_limit: float) -> dict:
 # ── ASGI app assembly ─────────────────────────────────────────────────────────
 
 def build_app():
-    # FastMCP exposes its SSE ASGI app via sse_app() in FastMCP 2.x
-    try:
-        mcp_asgi = mcp.sse_app()
-    except AttributeError:
-        # Fallback for different FastMCP versions
-        mcp_asgi = mcp.get_asgi_app()
+    """
+    Build the ASGI app by wrapping FastMCP's SSE app with header-capture middleware.
+    Tries every known FastMCP 2.x API variant so the server survives version bumps.
+    """
+    mcp_asgi = None
+    attempts = []
 
-    return Starlette(
-        routes=[Mount("/", app=mcp_asgi)],
-        middleware=[Middleware(HeaderMiddleware)],
-    )
+    for method_name in ("sse_app", "get_asgi_app", "streamable_http_app", "http_app"):
+        fn = getattr(mcp, method_name, None)
+        if fn is None:
+            attempts.append(f"{method_name}: not found")
+            continue
+        try:
+            mcp_asgi = fn()
+            print(f"[acme-bank-mcp] FastMCP ASGI initialised via {method_name}()")
+            break
+        except Exception as exc:
+            attempts.append(f"{method_name}: {exc}")
+
+    if mcp_asgi is None:
+        raise RuntimeError(
+            f"Could not get ASGI app from FastMCP. Details: {'; '.join(attempts)}"
+        )
+
+    # Wrap with our header-capture middleware directly (no Starlette routing layer)
+    return HeaderMiddleware(app=mcp_asgi)
 
 
+# Built at import time so `uvicorn main:app` also works
 app = build_app()
 
+
 if __name__ == "__main__":
-    print(f"Starting ACME Bank MCP Server on port {PORT}")
-    print(f"SSE endpoint: http://0.0.0.0:{PORT}/sse")
-    print(f"API key: {'*' * (len(API_KEY) - 4) + API_KEY[-4:]}")
+    print(f"[acme-bank-mcp] Starting on port {PORT}")
+    print(f"[acme-bank-mcp] SSE endpoint → http://0.0.0.0:{PORT}/sse")
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")

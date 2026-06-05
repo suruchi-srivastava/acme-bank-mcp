@@ -93,6 +93,7 @@ mcp = FastMCP(
         "fraud alerts, and financial insights. Be concise, accurate, and professional. "
         "Always reference specific account IDs and dollar amounts when relevant."
     ),
+    stateless_http=True,   # no session-ID required — works with Mindset's validator
 )
 
 # ── 1. Customer Profile ───────────────────────────────────────────────────────

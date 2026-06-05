@@ -93,7 +93,6 @@ mcp = FastMCP(
         "fraud alerts, and financial insights. Be concise, accurate, and professional. "
         "Always reference specific account IDs and dollar amounts when relevant."
     ),
-    stateless_http=True,   # no session-ID required — works with Mindset's validator
 )
 
 # ── 1. Customer Profile ───────────────────────────────────────────────────────
@@ -887,18 +886,26 @@ def build_app():
     mcp_asgi = None
     attempts = []
 
-    for method_name in ("sse_app", "get_asgi_app", "streamable_http_app", "http_app"):
+    # Try methods in order; pass stateless_http=True where supported
+    for method_name in ("http_app", "streamable_http_app", "sse_app", "get_asgi_app"):
         fn = getattr(mcp, method_name, None)
         if fn is None:
             attempts.append(f"{method_name}: not found")
             continue
-        try:
-            mcp_asgi = fn()
-            print(f"[acme-bank-mcp] FastMCP ASGI initialised via {method_name}()")
+        for kwargs in ({"stateless_http": True}, {}):
+            try:
+                mcp_asgi = fn(**kwargs)
+                label = f"{method_name}({', '.join(f'{k}={v}' for k,v in kwargs.items())})"
+                print(f"[acme-bank-mcp] FastMCP ASGI initialised via {label}")
+                break
+            except TypeError:
+                continue   # method doesn't accept that kwarg — try without
+            except Exception as exc:
+                attempts.append(f"{method_name}: {exc}")
+                print(f"[acme-bank-mcp] {method_name}() failed: {exc}")
+                break
+        if mcp_asgi is not None:
             break
-        except Exception as exc:
-            attempts.append(f"{method_name}: {exc}")
-            print(f"[acme-bank-mcp] {method_name}() failed: {exc}")
 
     if mcp_asgi is None:
         raise RuntimeError(

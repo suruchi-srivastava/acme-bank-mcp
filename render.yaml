@@ -11,3 +11,5 @@ services:
         generateValue: true   # Render auto-generates a secure random value
       - key: PORT
         value: "10000"        # Render free tier uses port 10000
+      - key: FASTMCP_STATELESS_HTTP
+        value: "true"         # Accept requests without mcp-session-id (required for Mindset)

@@ -6,6 +6,7 @@ Mindset registers this at: https://<your-app>.onrender.com/sse
 API key: set ACME_API_KEY env var, then register that key in Mindset.
 """
 
+import json
 import os
 import secrets
 import uvicorn
@@ -816,10 +817,71 @@ async def set_spending_alert(category: str, monthly_limit: float) -> dict:
 
 # ── ASGI app assembly ─────────────────────────────────────────────────────────
 
+class NotificationFixMiddleware:
+    """
+    Intercepts `notifications/initialized` sent without an mcp-session-id header.
+
+    FastMCP's streamable-HTTP transport rejects (400) any request that lacks a
+    session ID, including the `notifications/initialized` notification that some
+    MCP clients (including Mindset) send immediately after the initialize
+    handshake — before a session is fully established.
+
+    The MCP spec says servers MUST return 202 for valid notifications, so we
+    short-circuit here and never forward these session-less notifications to
+    FastMCP.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope["type"] == "http"
+            and scope.get("method") == "POST"
+            and scope.get("path") == "/mcp"
+        ):
+            headers = {k: v for k, v in scope.get("headers", [])}
+            if b"mcp-session-id" not in headers:
+                # Buffer the body so we can inspect it without consuming the stream
+                body = b""
+                buffered: list[dict] = []
+                more = True
+                while more:
+                    msg = await receive()
+                    buffered.append(msg)
+                    if msg["type"] == "http.request":
+                        body += msg.get("body", b"")
+                        more = msg.get("more_body", False)
+
+                try:
+                    data = json.loads(body)
+                    if "id" not in data and data.get("method") == "notifications/initialized":
+                        await send({"type": "http.response.start", "status": 202,
+                                    "headers": [(b"content-length", b"0")]})
+                        await send({"type": "http.response.body", "body": b""})
+                        return
+                except Exception:
+                    pass
+
+                # Not a special case — replay buffered messages and pass through
+                idx = 0
+
+                async def replay():
+                    nonlocal idx
+                    if idx < len(buffered):
+                        m = buffered[idx]; idx += 1; return m
+                    return await receive()
+
+                await self.app(scope, replay, send)
+                return
+
+        await self.app(scope, receive, send)
+
+
 def build_app():
     """
-    Build the ASGI app by wrapping FastMCP's SSE app with header-capture middleware.
-    Tries every known FastMCP 2.x API variant so the server survives version bumps.
+    Build the ASGI app by wrapping FastMCP's HTTP app with our middlewares.
+    Tries every known FastMCP API variant so the server survives version bumps.
     """
     mcp_asgi = None
     attempts = []
@@ -835,14 +897,15 @@ def build_app():
             break
         except Exception as exc:
             attempts.append(f"{method_name}: {exc}")
+            print(f"[acme-bank-mcp] {method_name}() failed: {exc}")
 
     if mcp_asgi is None:
         raise RuntimeError(
             f"Could not get ASGI app from FastMCP. Details: {'; '.join(attempts)}"
         )
 
-    # Wrap with our header-capture middleware directly (no Starlette routing layer)
-    return HeaderMiddleware(app=mcp_asgi)
+    # Stack: NotificationFix → HeaderCapture → FastMCP
+    return NotificationFixMiddleware(HeaderMiddleware(app=mcp_asgi))
 
 
 # Built at import time so `uvicorn main:app` also works
